@@ -56,3 +56,6 @@ class MonitorCriteria:
     time_from: datetime.time | None = None
     time_to: datetime.time | None = None
     applicants_count: int = 1
+    # Credentials for providers that require login
+    email: str | None = None
+    password: str | None = None

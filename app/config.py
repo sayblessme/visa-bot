@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     # Dedup
     slot_dedup_minutes: int = 30
 
+    # Service accounts (fallback when user has no credentials)
+    vfs_email: str = ""
+    vfs_password: str = ""
+    tls_email: str = ""
+    tls_password: str = ""
+    bls_email: str = ""
+    bls_password: str = ""
+
     # Logging
     log_level: str = "INFO"
 

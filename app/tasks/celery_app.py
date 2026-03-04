@@ -20,7 +20,7 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
-celery_app.autodiscover_tasks(["app.tasks"])
-
-# Load beat schedule
-import app.tasks.beat  # noqa: F401, E402
+# Explicit imports — autodiscover doesn't work with our package layout
+import app.tasks.monitor  # noqa: E402, F401
+import app.tasks.book  # noqa: E402, F401
+import app.tasks.beat  # noqa: E402, F401

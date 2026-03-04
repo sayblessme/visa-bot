@@ -254,14 +254,21 @@ class TLScontactProvider(BaseProvider):
             await page.goto(booking_url, wait_until="networkidle", timeout=30000)
             await asyncio.sleep(2)
 
-            # If redirected to login — need credentials
+            # If redirected to login — try auto-login with credentials
             if "login" in page.url.lower() or "registration" in page.url.lower():
-                log.info("tls.fetch.login_required", url=page.url)
-                # Try to intercept appointment data from network requests
-                slots = await self._intercept_slot_data(page, criteria)
-                if not slots:
-                    log.info("tls.fetch.need_login", msg="Login required to see slots")
-                return slots
+                if criteria.email and criteria.password:
+                    log.info("tls.fetch.auto_login", email=criteria.email[:3] + "***")
+                    logged_in = await self.login(page, criteria.email, criteria.password)
+                    if logged_in:
+                        await page.goto(booking_url, wait_until="networkidle", timeout=30000)
+                        await asyncio.sleep(2)
+                    else:
+                        log.warning("tls.fetch.auto_login_failed")
+                        return []
+                else:
+                    log.info("tls.fetch.need_login", msg="No credentials provided")
+                    slots = await self._intercept_slot_data(page, criteria)
+                    return slots
 
             # Parse calendar slots from the page
             slots = await self._parse_calendar_page(page, country, city or "", criteria)

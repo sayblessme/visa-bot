@@ -7,17 +7,32 @@ import datetime
 import json
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
-from app.db.session import async_session_factory, sync_session_factory
+from app.db.session import sync_session_factory
 from app.db import crud
 from app.db.models import Watch, UserPreference
 from app.providers.registry import get_provider
 from app.providers.schemas import MonitorCriteria
 from app.tasks.celery_app import celery_app
+from app.utils.crypto import decrypt_data
 from app.utils.hashing import slot_hash
 
 log = structlog.get_logger()
+
+# Service account credentials per provider (from .env)
+_SERVICE_ACCOUNTS: dict[str, tuple[str, str]] = {}
+
+
+def _get_service_account(provider_name: str) -> tuple[str, str]:
+    """Return (email, password) from .env for the given provider, or ('', '')."""
+    if not _SERVICE_ACCOUNTS:
+        _SERVICE_ACCOUNTS["vfs_global"] = (settings.vfs_email, settings.vfs_password)
+        _SERVICE_ACCOUNTS["tlscontact"] = (settings.tls_email, settings.tls_password)
+        _SERVICE_ACCOUNTS["bls_spain"] = (settings.bls_email, settings.bls_password)
+    return _SERVICE_ACCOUNTS.get(provider_name, ("", ""))
 
 
 @celery_app.task(name="app.tasks.monitor.dispatch_monitors")
@@ -54,10 +69,14 @@ async def _async_check(task, watch_id: int, user_id: int, provider_name: str) ->
     provider = get_provider(provider_name)
     result = {"watch_id": watch_id, "user_id": user_id, "new_slots": 0, "errors": 0}
 
-    async with async_session_factory() as session:
-        # Build criteria from user preferences
+    # Create a fresh engine per task to avoid asyncpg pool conflicts in Celery forks
+    engine = create_async_engine(settings.database_url, echo=False, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        # Build criteria from user preferences (with credential fallback)
         pref = await crud.get_preferences(session, user_id)
-        criteria = _build_criteria(pref)
+        criteria = _build_criteria(pref, provider_name)
 
         try:
             slots = await provider.fetch_availability(criteria)
@@ -119,6 +138,7 @@ async def _async_check(task, watch_id: int, user_id: int, provider_name: str) ->
 
         result["new_slots"] = len(new_slots)
 
+    await engine.dispose()
     return result
 
 
@@ -153,11 +173,29 @@ def _send_notification(
         start_booking.delay(user_id, s_hash, provider_name, slot_json)
 
 
-def _build_criteria(pref: UserPreference | None) -> MonitorCriteria:
+def _build_criteria(pref: UserPreference | None, provider_name: str = "") -> MonitorCriteria:
     if pref is None:
         return MonitorCriteria()
 
     weekdays = pref.weekdays.split(",") if pref.weekdays else None
+
+    # Resolve credentials: user's own → service account fallback
+    email = pref.provider_email or ""
+    password = ""
+    if pref.provider_password_encrypted and settings.sessions_encryption_key:
+        try:
+            password = decrypt_data(pref.provider_password_encrypted, settings.sessions_encryption_key)
+        except Exception:
+            password = ""
+
+    # Fallback to service account if user has no credentials
+    if not email or not password:
+        svc_email, svc_password = _get_service_account(provider_name)
+        if svc_email and svc_password:
+            email = svc_email
+            password = svc_password
+            log.info("monitor.using_service_account", provider=provider_name)
+
     return MonitorCriteria(
         country=pref.country,
         city=pref.city,
@@ -169,4 +207,6 @@ def _build_criteria(pref: UserPreference | None) -> MonitorCriteria:
         time_from=pref.time_from,
         time_to=pref.time_to,
         applicants_count=pref.applicants_count,
+        email=email or None,
+        password=password or None,
     )

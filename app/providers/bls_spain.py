@@ -102,10 +102,21 @@ class BLSSpainProvider(BaseProvider):
                 await page.wait_for_load_state("networkidle", timeout=15000)
                 await asyncio.sleep(2)
 
-            # Check if login required
+            # Check if login required — auto-login if credentials available
             if await self._needs_login(page):
-                log.info("bls.fetch.login_required")
-                return []
+                if criteria.email and criteria.password:
+                    log.info("bls.fetch.auto_login", email=criteria.email[:3] + "***")
+                    await page.locator('input[type="email"], input[name="email"]').first.fill(criteria.email)
+                    await page.locator('input[type="password"]').first.fill(criteria.password)
+                    await page.locator('button[type="submit"]').first.click()
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                    await asyncio.sleep(2)
+                    if await self._needs_login(page):
+                        log.warning("bls.fetch.auto_login_failed")
+                        return []
+                else:
+                    log.info("bls.fetch.login_required", msg="No credentials provided")
+                    return []
 
             # Parse calendar / available dates
             slots = await self._parse_slots(page, criteria)

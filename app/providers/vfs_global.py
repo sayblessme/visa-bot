@@ -233,8 +233,16 @@ class VFSGlobalProvider(BaseProvider):
     async def fetch_availability(self, criteria: MonitorCriteria) -> list[Slot]:
         """
         Fetch available slots from VFS Global API.
-        Requires a valid JWT token (obtained via login).
+        If credentials are provided in criteria, auto-login to get JWT.
         """
+        # Auto-login if we have credentials but no token
+        if not self._jwt_token and criteria.email and criteria.password:
+            country = criteria.country or "Germany"
+            country_info = VFS_CENTERS.get(country, {})
+            country_code = country_info.get("country_code", "deu")
+            log.info("vfs.fetch.auto_login", email=criteria.email[:3] + "***")
+            await self.login(criteria.email, criteria.password, country_code)
+
         if not self._jwt_token:
             log.warning("vfs.fetch.no_token", msg="No JWT token, attempting browser-based fetch")
             return await self._fetch_via_browser(criteria)
