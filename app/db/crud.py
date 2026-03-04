@@ -57,7 +57,7 @@ async def get_watch(session: AsyncSession, user_id: int) -> Watch | None:
     result = await session.execute(
         select(Watch).where(Watch.user_id == user_id).order_by(Watch.id.desc())
     )
-    return result.scalar_first()
+    return result.scalars().first()
 
 
 async def get_or_create_watch(

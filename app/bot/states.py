@@ -14,6 +14,11 @@ class SettingsFlow(StatesGroup):
     choosing_applicants = State()
 
 
+class CredentialsFlow(StatesGroup):
+    entering_email = State()
+    entering_password = State()
+
+
 class BookingFlow(StatesGroup):
     waiting_user_action = State()
     entering_code = State()

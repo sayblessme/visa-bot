@@ -50,6 +50,8 @@ class UserPreference(Base):
     time_from: Mapped[datetime.time | None] = mapped_column(nullable=True)
     time_to: Mapped[datetime.time | None] = mapped_column(nullable=True)
     applicants_count: Mapped[int] = mapped_column(Integer, default=1)
+    provider_email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    provider_password_encrypted: Mapped[bytes | None] = mapped_column(nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="preferences")
 
