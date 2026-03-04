@@ -11,4 +11,8 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.monitor.dispatch_monitors",
         "schedule": 60.0,
     },
+    "refresh-vfs-token-every-10min": {
+        "task": "app.tasks.vfs_token_refresh.refresh_vfs_token",
+        "schedule": 600.0,  # 10 minutes
+    },
 }

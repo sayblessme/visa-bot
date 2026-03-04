@@ -24,3 +24,4 @@ celery_app.conf.update(
 import app.tasks.monitor  # noqa: E402, F401
 import app.tasks.book  # noqa: E402, F401
 import app.tasks.beat  # noqa: E402, F401
+import app.tasks.vfs_token_refresh  # noqa: E402, F401

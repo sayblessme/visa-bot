@@ -19,6 +19,11 @@ class CredentialsFlow(StatesGroup):
     entering_password = State()
 
 
+class VfsTokenFlow(StatesGroup):
+    entering_authorize = State()
+    entering_clientsource = State()
+
+
 class BookingFlow(StatesGroup):
     waiting_user_action = State()
     entering_code = State()

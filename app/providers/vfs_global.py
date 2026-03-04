@@ -26,6 +26,16 @@ from app.utils.crypto import decrypt_data, encrypt_data
 
 log = structlog.get_logger()
 
+
+class _TokenCfg:
+    """Lightweight wrapper so Redis tokens can be used where settings cfg is expected."""
+
+    def __init__(self, data: dict) -> None:
+        self.vfs_authorize = data.get("authorize", "")
+        self.vfs_clientsource = data.get("clientsource", "")
+        self.vfs_route = data.get("route", "")
+        self.vfs_cf_clearance = data.get("cf_clearance", "")
+
 # Known VFS center codes (expandable)
 VFS_CENTERS: dict[str, dict] = {
     "Germany": {
@@ -155,17 +165,38 @@ class VFSGlobalProvider(BaseProvider):
         log.info("vfs.login", url=login_url)
 
         try:
-            await page.goto(login_url, wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(2)
+            # Use domcontentloaded — networkidle hangs on VFS due to continuous XHR
+            await page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
 
-            # Fill email
-            email_input = page.locator("#mat-input-0")
-            await email_input.wait_for(state="visible", timeout=10000)
-            await email_input.fill(email)
+            # Wait for Cloudflare Waiting Room to pass (up to 30s)
+            for _ in range(15):
+                title = await page.title()
+                if "just a moment" in title.lower() or "checking" in title.lower():
+                    log.info("vfs.login.cloudflare_wait")
+                    await asyncio.sleep(2)
+                else:
+                    break
+            await asyncio.sleep(3)
+
+            # Fill email — try multiple selectors
+            email_input = page.locator(
+                '#mat-input-0, '
+                'input[type="email"], '
+                'input[formcontrolname="username"], '
+                'input[placeholder*="mail"], '
+                'input[name="email"]'
+            )
+            await email_input.first.wait_for(state="visible", timeout=20000)
+            await email_input.first.fill(email)
+            await asyncio.sleep(0.5)
 
             # Fill password
-            password_input = page.locator("#mat-input-1")
-            await password_input.fill(password)
+            password_input = page.locator(
+                '#mat-input-1, '
+                'input[type="password"], '
+                'input[formcontrolname="password"]'
+            )
+            await password_input.first.fill(password)
 
             # Handle reCAPTCHA — wait for human to solve if present
             captcha = page.locator("iframe[src*='recaptcha']")
@@ -233,75 +264,103 @@ class VFSGlobalProvider(BaseProvider):
     async def fetch_availability(self, criteria: MonitorCriteria) -> list[Slot]:
         """
         Fetch available slots from VFS Global API.
-        If credentials are provided in criteria, auto-login to get JWT.
+        Priority: 1) Redis tokens (auto-refreshed)  2) .env tokens  3) Playwright browser fallback.
         """
-        # Auto-login if we have credentials but no token
-        if not self._jwt_token and criteria.email and criteria.password:
-            country = criteria.country or "Germany"
-            country_info = VFS_CENTERS.get(country, {})
-            country_code = country_info.get("country_code", "deu")
-            log.info("vfs.fetch.auto_login", email=criteria.email[:3] + "***")
-            await self.login(criteria.email, criteria.password, country_code)
+        from app.config import settings as cfg
+        from app.tasks.vfs_token_refresh import get_vfs_tokens
 
-        if not self._jwt_token:
-            log.warning("vfs.fetch.no_token", msg="No JWT token, attempting browser-based fetch")
-            return await self._fetch_via_browser(criteria)
+        # 1) Try Redis tokens (set by auto-refresh or /vfs_token command)
+        redis_tokens = get_vfs_tokens()
+        if redis_tokens and redis_tokens.get("authorize"):
+            log.info("vfs.fetch.redis_tokens", route=redis_tokens.get("route", ""))
+            return await self._fetch_via_direct_api(criteria, _TokenCfg(redis_tokens))
 
-        return await self._fetch_via_api(criteria)
+        # 2) Fallback to .env tokens
+        if cfg.vfs_authorize and cfg.vfs_clientsource:
+            log.info("vfs.fetch.env_tokens", route=cfg.vfs_route)
+            return await self._fetch_via_direct_api(criteria, cfg)
 
-    async def _fetch_via_api(self, criteria: MonitorCriteria) -> list[Slot]:
-        """Fetch slots using the VFS Lift API directly."""
-        country = criteria.country or "Germany"
+        # 3) Last resort: browser-based fetch
+        log.warning("vfs.fetch.no_token", msg="No API token available, using browser fallback")
+        return await self._fetch_via_browser(criteria)
+
+    async def _fetch_via_direct_api(
+        self, criteria: MonitorCriteria, cfg
+    ) -> list[Slot]:
+        """Fetch slots using the VFS Lift API with authorize/clientsource headers."""
+        # Parse route: "kaz/ru/aut" → origin=kaz, dest=aut
+        route_parts = cfg.vfs_route.split("/") if cfg.vfs_route else []
+        origin_code = route_parts[0] if len(route_parts) >= 1 else "kaz"
+        dest_code = route_parts[2] if len(route_parts) >= 3 else "aut"
+
+        country = criteria.country or "Austria"
         city = criteria.city or criteria.center
 
-        country_info = VFS_CENTERS.get(country, {})
-        country_code = country_info.get("country_code", "deu")
-
-        # Resolve center code
-        center_code = ""
-        if city and country_info.get("centers"):
-            center_code = country_info["centers"].get(city, "")
-
-        params = {
-            "countryCode": country_code,
-            "missionCode": country_code,
-            "centerCode": center_code,
-            "loginUser": "",
-            "visaCategoryCode": self._visa_type_to_code(criteria.visa_type),
-            "languageCode": "en-US",
-            "applicantsCount": str(criteria.applicants_count),
-            "days": "90",
-            "slotType": "appointment",
-        }
-
         headers = {
-            "Authorization": f"Bearer {self._jwt_token}",
-            "Accept": "application/json",
+            "authorize": cfg.vfs_authorize,
+            "clientsource": cfg.vfs_clientsource,
+            "route": cfg.vfs_route,
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Origin": "https://visa.vfsglobal.com",
+            "Referer": "https://visa.vfsglobal.com/",
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                "Version/18.5 Mobile/15E148 Safari/604.1"
             ),
         }
 
+        # Add Cloudflare cookies if available
+        cookies = {}
+        if cfg.vfs_cf_clearance:
+            cookies["cf_clearance"] = cfg.vfs_cf_clearance
+
+        slots: list[Slot] = []
+
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=20, cookies=cookies) as client:
+                # GET /appointment/slots — use codes matching the route
+                params = {
+                    "countryCode": origin_code,
+                    "missionCode": dest_code,
+                    "centerCode": "",
+                    "loginUser": "",
+                    "visaCategoryCode": self._visa_type_to_code(criteria.visa_type),
+                    "languageCode": "en-US",
+                    "applicantsCount": str(criteria.applicants_count),
+                    "days": "90",
+                    "slotType": "appointment",
+                }
                 resp = await client.get(self.SLOTS_API, params=params, headers=headers)
+                log.info("vfs.api.slots", status=resp.status_code, body=resp.text[:500])
 
-                if resp.status_code == 401:
-                    log.warning("vfs.api.jwt_expired")
-                    self._jwt_token = None
-                    return []
+                if resp.status_code == 200:
+                    data = resp.json()
+                    slots = self._parse_api_slots(data, country, city or "", criteria)
+                elif resp.status_code in (401, 403):
+                    log.warning("vfs.api.auth_error", status=resp.status_code)
 
-                if resp.status_code != 200:
-                    log.warning("vfs.api.error", status=resp.status_code, body=resp.text[:200])
-                    return []
+                # Also try POST /appointment/application
+                if not slots:
+                    app_resp = await client.post(
+                        "https://lift-api.vfsglobal.com/appointment/application",
+                        headers=headers,
+                        json={
+                            "countryCode": origin_code,
+                            "missionCode": dest_code,
+                        },
+                    )
+                    log.info("vfs.api.application", status=app_resp.status_code, body=app_resp.text[:500])
 
-                data = resp.json()
-                return self._parse_api_slots(data, country, city or "", criteria)
+                    if app_resp.status_code == 200:
+                        data = app_resp.json()
+                        slots = self._parse_api_slots(data, country, city or "", criteria)
 
         except Exception as exc:
             log.error("vfs.api.request_error", error=str(exc))
-            return []
+
+        return slots
 
     def _parse_api_slots(
         self, data: dict | list, country: str, center: str, criteria: MonitorCriteria
@@ -371,7 +430,15 @@ class VFSGlobalProvider(BaseProvider):
 
         try:
             url = f"{self.BASE_URL}/{country_code}/en/rus/book-an-appointment"
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+            # Wait for Cloudflare
+            for _ in range(15):
+                title = await page.title()
+                if "just a moment" in title.lower():
+                    await asyncio.sleep(2)
+                else:
+                    break
             await asyncio.sleep(3)
 
             # Try to find green (available) date cells in the calendar

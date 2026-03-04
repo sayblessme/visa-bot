@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     bls_email: str = ""
     bls_password: str = ""
 
+    # VFS Global direct API token (from browser session)
+    vfs_authorize: str = ""
+    vfs_clientsource: str = ""
+    vfs_route: str = ""  # e.g. "kaz/ru/aut"
+    vfs_cf_clearance: str = ""  # Cloudflare cf_clearance cookie
+
+    # Admin (receives alerts when token refresh fails)
+    admin_user_id: int = 0
+
     # Logging
     log_level: str = "INFO"
 
