@@ -1,0 +1,85 @@
+version: "3.9"
+
+x-common-env: &common-env
+  BOT_TOKEN: ${BOT_TOKEN}
+  DATABASE_URL: postgresql+asyncpg://visa:visa@postgres:5432/visa_bot
+  DATABASE_URL_SYNC: postgresql://visa:visa@postgres:5432/visa_bot
+  REDIS_URL: redis://redis:6379/0
+  SESSIONS_ENCRYPTION_KEY: ${SESSIONS_ENCRYPTION_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  MONITOR_INTERVAL_MIN: ${MONITOR_INTERVAL_MIN:-60}
+  MONITOR_INTERVAL_MAX: ${MONITOR_INTERVAL_MAX:-180}
+  SLOT_DEDUP_MINUTES: ${SLOT_DEDUP_MINUTES:-30}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: visa
+      POSTGRES_PASSWORD: visa
+      POSTGRES_DB: visa_bot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U visa -d visa_bot"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bot:
+    build: .
+    command: python -m app.main
+    environment:
+      <<: *common-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      <<: *common-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  beat:
+    build: .
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    environment:
+      <<: *common-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
