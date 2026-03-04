@@ -9,10 +9,11 @@ from aiogram.types import (
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Выбрать страну"), KeyboardButton(text="Фильтры")],
+            [KeyboardButton(text="Выбрать провайдера"), KeyboardButton(text="Выбрать страну")],
+            [KeyboardButton(text="Фильтры"), KeyboardButton(text="Статус")],
             [KeyboardButton(text="Включить мониторинг"), KeyboardButton(text="Выключить мониторинг")],
             [KeyboardButton(text="Автозапись: Вкл"), KeyboardButton(text="Автозапись: Выкл")],
-            [KeyboardButton(text="Статус"), KeyboardButton(text="История попыток")],
+            [KeyboardButton(text="История попыток")],
         ],
         resize_keyboard=True,
     )
@@ -43,6 +44,19 @@ def filters_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Готово", callback_data="filter:done")],
         ]
     )
+
+
+def providers_kb() -> InlineKeyboardMarkup:
+    providers = [
+        ("VFS Global", "vfs_global"),
+        ("TLScontact", "tlscontact"),
+        ("Mock (тест)", "mock"),
+    ]
+    buttons = [
+        [InlineKeyboardButton(text=label, callback_data=f"provider:{value}")]
+        for label, value in providers
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def booking_action_kb(attempt_id: int) -> InlineKeyboardMarkup:

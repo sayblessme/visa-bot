@@ -1,10 +1,14 @@
 from app.providers.base import BaseProvider
 from app.providers.mock import MockProvider
 from app.providers.generic_playwright import GenericPlaywrightProvider
+from app.providers.vfs_global import VFSGlobalProvider
+from app.providers.tlscontact import TLScontactProvider
 
 _PROVIDERS: dict[str, type[BaseProvider]] = {
     "mock": MockProvider,
     "generic_playwright": GenericPlaywrightProvider,
+    "vfs_global": VFSGlobalProvider,
+    "tlscontact": TLScontactProvider,
 }
 
 
